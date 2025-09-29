@@ -19,6 +19,7 @@ from langchain_community.utilities import SerpAPIWrapper
 import whisper
 import pandas as pd
 from typing import List
+import yt_dlp 
 
 # --- CUSTOM THEME DEFINITION ---
 def load_css():
@@ -136,7 +137,7 @@ if not USE_OPENAI:
 
 # Helper functions (caching is important for performance)
 @st.cache_resource
-import yt_dlp # Make sure to add this import at the top of your file
+# Make sure to add this import at the top of your file
 
 # ... (keep all your other imports) ...
 
@@ -317,4 +318,5 @@ if url:
 
 st.markdown("---")
 st.markdown("Built with LangChain & Streamlit. A modern way to interact with video content.")
+
 
