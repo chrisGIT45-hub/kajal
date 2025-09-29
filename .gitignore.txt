@@ -1,0 +1,12 @@
+# Environment variables
+.env
+
+# Virtual Environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Other folders (if not needed for the app)
+youtube_qa_bot/
