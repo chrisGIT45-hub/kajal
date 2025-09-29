@@ -136,17 +136,51 @@ if not USE_OPENAI:
 
 # Helper functions (caching is important for performance)
 @st.cache_resource
+import yt_dlp # Make sure to add this import at the top of your file
+
+# ... (keep all your other imports) ...
+
+@st.cache_resource
 def download_audio(url: str) -> str:
-    """Fallback: Download audio if no captions."""
+    """Download audio from a YouTube URL using yt-dlp and return the mp3 file path."""
     try:
-        yt = YouTube(url)
-        stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-        temp_fn = stream.download(output_path='temp', filename='audio')
-        mp3_path = temp_fn.rsplit('.', 1)[0] + '.mp3'
-        subprocess.run(["ffmpeg", "-y", "-i", temp_fn, "-vn", "-acodec", "libmp3lame", mp3_path],
-                       check=True, capture_output=True, text=True)
-        os.remove(temp_fn)
-        return mp3_path
+        # Define the output directory and ensure it exists
+        output_dir = 'temp'
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Define yt-dlp options
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(output_dir, 'audio.%(ext)s'), # Save to temp folder
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'quiet': True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        # The output file will be 'temp/audio.mp3'
+        mp3_path = os.path.join(output_dir, 'audio.mp3')
+        
+        # Check if the file was created
+        if not os.path.exists(mp3_path):
+            # Sometimes the extension is different, let's find it
+            for file in os.listdir(output_dir):
+                if file.startswith('audio'):
+                    base, ext = os.path.splitext(file)
+                    original_path = os.path.join(output_dir, file)
+                    os.rename(original_path, mp3_path)
+                    break
+        
+        if os.path.exists(mp3_path):
+            return mp3_path
+        else:
+            raise FileNotFoundError("Audio file not found after download.")
+
     except Exception as e:
         st.error(f"Audio download error: {e}")
         return None
@@ -283,3 +317,4 @@ if url:
 
 st.markdown("---")
 st.markdown("Built with LangChain & Streamlit. A modern way to interact with video content.")
+
