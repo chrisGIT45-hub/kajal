@@ -5,8 +5,6 @@ import re
 import os
 import subprocess
 import streamlit as st
-# No longer need load_dotenv for deployment
-# from dotenv import load_dotenv
 from pytube import YouTube
 import openai
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -22,8 +20,97 @@ import whisper
 import pandas as pd
 from typing import List
 
-# --- FIX 1: USE STREAMLIT SECRETS FOR API KEYS ---
-# Load secrets from Streamlit Cloud's secret management
+# --- CUSTOM THEME DEFINITION ---
+def load_css():
+    """Inject custom CSS for a 'cooler' theme."""
+    css = """
+    <style>
+        /* Import a cool font from Google Fonts */
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+
+        html, body, [class*="st-"] {
+            font-family: 'Roboto', sans-serif;
+        }
+
+        /* Main app background */
+        .stApp {
+            background-color: #0f1116;
+            color: #fafafa;
+        }
+
+        /* Main title with a gradient effect */
+        h1 {
+            background: -webkit-linear-gradient(45deg, #00b4d8, #0077b6, #90e0ef);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 700;
+        }
+
+        /* Sidebar styling */
+        .st-emotion-cache-16txtl3 {
+            background-color: #1a1c23;
+        }
+        
+        /* Buttons styling */
+        .stButton > button {
+            background-color: #00b4d8;
+            color: white;
+            border-radius: 12px;
+            border: none;
+            padding: 12px 28px;
+            transition: all 0.3s ease-in-out;
+            font-weight: 700;
+        }
+        .stButton > button:hover {
+            background-color: #0096b7;
+            transform: scale(1.05);
+            box-shadow: 0 4px 20px rgba(0, 180, 216, 0.3);
+        }
+
+        /* Input box styling */
+        .stTextInput, .stTextArea {
+            border-radius: 10px;
+        }
+        .st-emotion-cache-1p5k82d { /* Input box container */
+            background-color: #1f2228;
+            border-radius: 10px;
+        }
+
+        /* Expander (Sources) styling */
+        .st-emotion-cache-pwan1w {
+            background-color: #1f2228;
+            border-radius: 10px;
+            border-left: 5px solid #00b4d8;
+        }
+        
+        /* Custom spinner animation */
+        .stSpinner > div:first-child {
+            border-top-color: #00b4d8;
+            border-right-color: transparent;
+            border-bottom-color: #00b4d8;
+            border-left-color: transparent;
+            width: 80px;
+            height: 80px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+# --- APP CONFIG AND MAIN CODE ---
+
+# Set page config first
+st.set_page_config(page_title="YouTube Q&A Bot", page_icon="🎥", layout="wide")
+
+# Apply the custom theme
+load_css()
+
+# Load secrets for Streamlit Cloud deployment
 openai.api_key = st.secrets.get("OPENAI_API_KEY")
 SERPAPI_KEY = st.secrets.get("SERPAPI_KEY")
 
@@ -32,13 +119,12 @@ USE_OPENAI = bool(openai.api_key)
 # Config: LLM and Wikipedia
 llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0, openai_api_key=openai.api_key) if USE_OPENAI else None
 
-# --- FIX 2: ADD USER-AGENT TO WIKIPEDIA API CALL ---
+# Add user-agent to Wikipedia API call
 wiki_wiki = wikipediaapi.Wikipedia(
     user_agent="YouTubeQABot/1.0 (contact@example.com)",
     language='en'
 )
 
-st.set_page_config(page_title="YouTube Q&A Bot", page_icon="🎥", layout="wide")
 st.title("🎥 YouTube Q&A Bot")
 
 # Sidebar for config
@@ -46,9 +132,9 @@ st.sidebar.header("Config")
 use_external = st.sidebar.checkbox("Use External Sources (Wikipedia/SerpAPI)", value=True)
 eval_mode = st.sidebar.checkbox("Research Eval Mode (Log to CSV)")
 if not USE_OPENAI:
-    st.sidebar.warning("No OpenAI key found in secrets. Using free fallbacks (HuggingFace + local Whisper).")
+    st.sidebar.warning("No OpenAI key found in secrets. Using free fallbacks.")
 
-# Helper functions
+# Helper functions (caching is important for performance)
 @st.cache_resource
 def download_audio(url: str) -> str:
     """Fallback: Download audio if no captions."""
@@ -58,13 +144,14 @@ def download_audio(url: str) -> str:
         temp_fn = stream.download(output_path='temp', filename='audio')
         mp3_path = temp_fn.rsplit('.', 1)[0] + '.mp3'
         subprocess.run(["ffmpeg", "-y", "-i", temp_fn, "-vn", "-acodec", "libmp3lame", mp3_path],
-                       check=True, capture_output=True)
+                       check=True, capture_output=True, text=True)
         os.remove(temp_fn)
         return mp3_path
     except Exception as e:
         st.error(f"Audio download error: {e}")
         return None
 
+@st.cache_resource
 def transcribe_audio(audio_path: str) -> str:
     """Fallback transcription: OpenAI or local Whisper."""
     try:
@@ -73,10 +160,10 @@ def transcribe_audio(audio_path: str) -> str:
                 transcript = openai.Audio.transcribe("whisper-1", f)
             text = transcript["text"]
         else:
+            # Caching the model load can speed things up on subsequent runs
             model = whisper.load_model("base")
             result = model.transcribe(audio_path)
             text = result["text"]
-        # Clean fillers
         text = re.sub(r'\b(um|uh|like|you know)\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\s+', ' ', text).strip()
         os.remove(audio_path)
@@ -105,138 +192,94 @@ def get_external_docs(question: str) -> List[Document]:
             pass
     return docs
 
-def summarize_context(docs: List[Document]) -> str:
-    """Summarize retrieved docs."""
-    if not USE_OPENAI or not docs:
+@st.cache_data
+def summarize_context(_docs: List[Document]) -> str:
+    """Summarize retrieved docs. Caching this function."""
+    if not USE_OPENAI or not _docs:
         return "Summarization N/A."
-    # The llm object is already configured with the API key
-    context_text = "\n".join([d.page_content for d in docs])[:2000]
+    context_text = "\n".join([d.page_content for d in _docs])[:2000]
     prompt = f"Summarize the key facts in the following text in 2-3 sentences:\n{context_text}"
     response = llm.invoke(prompt)
     return response.content
 
-
 # Main app logic
-url = st.text_input("Paste a YouTube URL:")
+url = st.text_input("Paste a YouTube URL:", placeholder="e.g., https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 if url:
-    st.info("Fetching transcript...")
     try:
         yt = YouTube(url)
-        # Try captions first
-        caption = yt.captions.get_by_language_code('en')
-        if caption is None:
-            raise ValueError("No English captions available.")
-        transcript = caption.generate_srt_captions()
+        with st.spinner("Fetching transcript..."):
+            caption = yt.captions.get_by_language_code('en')
+            if caption is None:
+                raise ValueError("No English captions available. Trying audio fallback.")
+            transcript = caption.generate_srt_captions()
         st.success(f"✅ Transcript fetched for: {yt.title}")
 
-        # Split transcript into chunks
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
         docs = splitter.create_documents([transcript])
 
-        # Add metadata for citations
         for i, doc in enumerate(docs):
-            doc.metadata = {
-                "source": "transcript",
-                "yt_title": yt.title,
-                "chunk_index": i,
-                "start_time": f"{(i * 10) // 60:02d}:{(i * 10) % 60:02d}" # Simple time estimate
-            }
+            doc.metadata = {"source": "transcript", "yt_title": yt.title, "chunk_index": i}
 
-        # Embeddings and vector store
         if USE_OPENAI:
             embeddings = OpenAIEmbeddings(openai_api_key=openai.api_key)
         else:
             embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        
         db = FAISS.from_documents(docs, embeddings)
         retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
-        # QA chain with custom prompt
-        if USE_OPENAI:
-            PROMPT_TEMPLATE = """
-            You are a helpful assistant answering from video transcript and external sources only.
-            Be concise: 1-2 sentences, brief explanation, then cite sources.
-            If unsure, say "I don't know based on the provided sources."
-            Cite sources like this: [Transcript: Chunk {chunk_index}] or [Wikipedia: {title}].
+        PROMPT_TEMPLATE = """
+        You are a helpful assistant. Answer from the provided video transcript and external sources only.
+        Be concise, then cite your sources like this: [Transcript: Chunk {chunk_index}] or [Wikipedia: {title}].
+        If you don't know, say so.
 
-            Context: {context}
-
-            Question: {question}
-
-            Answer:
-            """
-            PROMPT = PromptTemplate(template=PROMPT_TEMPLATE, input_variables=["context", "question"])
-            qa = RetrievalQA.from_chain_type(
-                llm=llm,
-                chain_type="stuff",
-                retriever=retriever,
-                return_source_documents=True,
-                chain_type_kwargs={"prompt": PROMPT}
-            )
-        else:
-            qa = None
-
+        Context: {context}
+        Question: {question}
+        Answer:
+        """
+        PROMPT = PromptTemplate(template=PROMPT_TEMPLATE, input_variables=["context", "question"])
+        qa = RetrievalQA.from_chain_type(
+            llm=llm, chain_type="stuff", retriever=retriever,
+            return_source_documents=True, chain_type_kwargs={"prompt": PROMPT}
+        )
+        
         question = st.text_input("Ask a question about the video:")
         if question:
-            if USE_OPENAI and qa:
+            if qa:
                 with st.spinner("Generating answer..."):
                     result = qa.invoke({"query": question})
                     answer = result["result"]
-
-                    # Get sources, summarize, confidence
+                    
                     transcript_docs = result["source_documents"]
                     external_docs = get_external_docs(question) if use_external else []
                     all_docs = transcript_docs + external_docs
-                    summary = summarize_context(all_docs) if USE_OPENAI else "N/A (no OpenAI)"
-                    confidence = "High" if len(transcript_docs) >= 2 else "Medium"
-
-                    # Display results
+                    summary = summarize_context(all_docs)
+                    
                     st.markdown(f"**Answer:** {answer}")
                     st.markdown(f"**Context Summary:** {summary}")
-                    st.markdown(f"**Confidence:** {confidence}")
-
-                    # Sources display
+                    
                     st.subheader("Sources")
-                    sources = [{"content": d.page_content[:200], **d.metadata} for d in all_docs]
-                    for i, src in enumerate(sources, 1):
-                        with st.expander(f"Source {i}: {src.get('source', 'unknown').title()}"):
-                            st.write(f"Metadata: {src}")
-                            st.write(f"Snippet: {src['content']}...")
-
-                    # Eval log
-                    if eval_mode:
-                        log_data = {
-                            "Video Title": yt.title,
-                            "Question": question,
-                            "Answer": answer[:100] + "...",
-                            "Confidence": confidence,
-                            "External Used": use_external,
-                            "Sources Count": len(sources)
-                        }
-                        st.json(log_data)
-                        df = pd.DataFrame([log_data])
-                        csv_path = "qa_eval_log.csv"
-                        # This part will not work on Streamlit Cloud's ephemeral filesystem
-                        # For persistent logging, you would need to use a database or other service.
-                        # df.to_csv(csv_path, mode='a', index=False, header=not os.path.exists(csv_path))
-                        # st.success(f"Logged to {csv_path}")
-
+                    for doc in all_docs:
+                        with st.expander(f"Source: {doc.metadata.get('source', 'unknown').title()} - {doc.metadata.get('title', 'Chunk ' + str(doc.metadata.get('chunk_index')))}"):
+                            st.write(doc.page_content[:300] + "...")
             else:
-                st.warning("OpenAI not available. Please add API keys to your Streamlit Cloud secrets to ask questions.")
+                st.warning("OpenAI not available. Please add API keys to your Streamlit Cloud secrets.")
 
     except Exception as e:
-        st.error(f"Error in captions or processing: {e}")
+        st.error(f"Error: {e}")
         st.info("Trying audio transcription fallback...")
-        audio_path = download_audio(url)
-        if audio_path:
-            transcript_text = transcribe_audio(audio_path)
-            if transcript_text:
-                # This fallback logic would need to be fleshed out similar to the main logic above
-                st.success("Fallback transcript processed. The full Q&A pipeline for fallback is not yet implemented in this script.")
-                st.text_area("Fallback Transcript", transcript_text, height=200)
+        with st.spinner("Downloading and transcribing audio... This may take a few minutes."):
+            audio_path = download_audio(url)
+            if audio_path:
+                transcript_text = transcribe_audio(audio_path)
+                if transcript_text:
+                    st.success("Fallback transcript processed.")
+                    st.text_area("Full Transcript (from audio)", transcript_text, height=250)
+                    st.warning("Q&A is disabled for fallback transcripts in this version.")
+                else:
+                    st.error("Fallback transcription failed.")
             else:
-                st.error("Fallback transcription failed.")
-        else:
-            st.error("Audio download failed. Ensure FFmpeg is installed in your deployment environment.")
+                st.error("Audio download failed.")
 
 st.markdown("---")
-st.markdown("Built with LangChain RAG for precise, cited answers. For research: Toggle external sources to compare accuracy.")
+st.markdown("Built with LangChain & Streamlit. A modern way to interact with video content.")
