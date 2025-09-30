@@ -31,7 +31,11 @@ USE_OPENAI = bool(openai.api_key)
 
 # Initialize LLM and Wikipedia API
 llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0, openai_api_key=openai.api_key) if USE_OPENAI else None
-wiki_wiki = wikipediaapi.Wikipedia('en')
+# FIX: Provide a User-Agent string as required by the MediaWiki API
+wiki_wiki = wikipediaapi.Wikipedia(
+    user_agent="MyYouTubeQABot/1.0 (your-email@example.com)",
+    language='en'
+)
 
 # Streamlit page config
 st.set_page_config(page_title="YouTube Q&A Bot", page_icon="🎥", layout="wide")
@@ -319,3 +323,4 @@ if url:
 
 st.markdown("---")
 st.markdown("*Built with LangChain RAG for precise, cited answers. For research: Toggle external sources to compare accuracy.*")
+
